@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UA Lecture Player</title>
+<link rel="stylesheet" href="css/player.php?v=11">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loading-overlay" class="hidden">
+  <div class="spinner"></div>
+  <div id="loading-status">Loading…</div>
+</div>
+
+<!-- Setup -->
+<div id="setup-section">
+  <div class="setup-card">
+    <h1>UA Lecture Player</h1>
+    <p>Choose how you want to load the lecture</p>
+
+    <!-- Mode tabs -->
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="tab-online">🌐 Online (URLs)</button>
+      <button class="tab-btn"        data-tab="tab-offline">📁 Offline (Files)</button>
+    </div>
+
+    <!-- Online tab -->
+    <div id="tab-online" class="tab-pane active">
+      <div class="setup-fields">
+        <input type="url" id="inp-video" placeholder="Video URL  (.webm)" />
+        <input type="url" id="inp-pdf"   placeholder="PDF URL  (optional)" />
+        <button id="load-btn-online">▶ Load Session</button>
+      </div>
+      <p class="hint">Or open with ?video=…&amp;pdf=… in the URL</p>
+    </div>
+
+    <!-- Offline tab -->
+    <div id="tab-offline" class="tab-pane">
+
+      <!-- output.webm drop zone -->
+      <div class="file-drop" id="drop-video">
+        <input type="file" id="file-video" accept="video/webm,video/*">
+        <div class="fd-icon">🎬</div>
+        <div class="fd-label" id="lbl-video">output.webm</div>
+        <div class="fd-sub">click or drag &amp; drop</div>
+      </div>
+
+      <!-- data.json drop zone -->
+      <div class="file-drop" id="drop-json">
+        <input type="file" id="file-json" accept="application/json,.json">
+        <div class="fd-icon">📋</div>
+        <div class="fd-label" id="lbl-json">data.json</div>
+        <div class="fd-sub">click or drag &amp; drop</div>
+      </div>
+
+      <!-- PDF drop zone (optional) -->
+      <div class="file-drop" id="drop-pdf">
+        <input type="file" id="file-pdf" accept="application/pdf,.pdf">
+        <div class="fd-icon">📄</div>
+        <div class="fd-label" id="lbl-pdf">Slides PDF  (optional)</div>
+        <div class="fd-sub">click or drag &amp; drop</div>
+      </div>
+
+      <button class="tab-load-btn" id="load-btn-offline">▶ Play Offline</button>
+      <p class="hint">Files never leave your device</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- Player -->
+<div id="player-section" class="hidden">
+  <div id="player-body">
+
+    <div id="buffering-overlay" class="hidden">
+      <svg class="svg-spinner" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="38"/>
+      </svg>
+    </div>
+
+    <div id="gesture-feedback"></div>
+    <div id="stats-bar" class="hidden"></div>
+
+    <!-- Slide area -->
+    <div id="slide-panel">
+      <div id="slide-container">
+        <canvas id="slide-canvas"></canvas>
+        <canvas id="draw-canvas"></canvas>
+        <canvas id="user-draw-canvas"></canvas>
+      </div>
+
+      <!-- Off-board scratch content strip (opt-in; shows pasted/duplicated
+           annotation groups that were dragged outside the visible 16:9
+           board and are therefore never seen in the normal render). -->
+      <div id="offboard-strip" class="hidden">
+        <div id="offboard-strip-label">OFF-BOARD SCRATCH CONTENT (unused in recording)</div>
+        <div id="offboard-strip-track"></div>
+      </div>
+
+      <!-- Drawing toolbar -->
+      <div id="draw-toolbar">
+        <button class="dtb-btn" id="dtb-toggle" title="Draw on slide (D)">✏️</button>
+        <div class="dtb-sep"></div>
+        <button class="dtb-btn active" id="dtb-pen" title="Pen">🖊️</button>
+        <button class="dtb-btn" id="dtb-hi" title="Highlighter">🖌️</button>
+        <button class="dtb-btn" id="dtb-eraser" title="Eraser">🩹</button>
+        <div class="dtb-sep"></div>
+        <input type="color" id="dtb-color" value="#FF3131" title="Pen color">
+        <input type="range" id="dtb-size" min="2" max="30" value="4" title="Brush size" style="writing-mode:vertical-lr;direction:rtl;height:60px;width:28px;margin:4px 0;accent-color:var(--hi);">
+        <div class="dtb-sep"></div>
+        <button class="dtb-btn" id="dtb-undo" title="Undo last stroke (Ctrl+Z)">↩</button>
+        <button class="dtb-btn" id="dtb-clear" title="Clear all my drawings">🗑</button>
+      </div>
+    </div>
+
+    <!-- Right sidebar: webcam + notes -->
+    <div id="right-sidebar">
+
+      <!-- Webcam -->
+      <div id="webcam-wrap">
+        <div class="panel-label">
+          INSTRUCTOR
+          <button id="sidebar-toggle-btn" title="Hide sidebar">✕</button>
+        </div>
+        <video id="webcam-video" preload="metadata" crossorigin="anonymous" playsinline></video>
+      </div>
+
+      <!-- Notes / Bookmarks panel -->
+      <div id="notes-panel">
+        <!-- Sidebar tabs -->
+        <div id="sidebar-tabs">
+          <button class="stab-btn active" data-stab="stab-notes">📒 Notes</button>
+          <button class="stab-btn" data-stab="stab-chapters">🗂 Slides</button>
+        </div>
+
+        <!-- Notes tab -->
+        <div id="stab-notes" class="stab-pane active">
+          <div id="notes-header">
+            <span>📒 Notebook</span>
+            <div style="display:flex;gap:3px;align-items:center;flex-wrap:wrap;">
+              <button id="add-note-btn" title="Add note (N)">+ Note</button>
+              <button id="import-notes-btn" class="notes-action-btn" title="Import">⬆</button>
+              <button id="export-notes-btn" class="notes-action-btn" title="Export">⬇</button>
+              <button id="reel-select-btn" class="notes-extra-btn" title="Select notes for Highlight Reel">🎬</button>
+              <button id="translate-btn" class="notes-extra-btn" title="Translate notes">🌐</button>
+              <span id="sync-badge" class="offline" title="Multi-tab sync">⚡ sync</span>
+            </div>
+          </div>
+
+          <!-- Import/Export modal overlay -->
+          <div id="notes-modal" class="hidden">
+            <div id="notes-modal-box">
+              <!-- Export panel -->
+              <div id="modal-export" class="hidden">
+                <div class="modal-title">Export Notes</div>
+                <div class="modal-body">
+                  <button class="modal-big-btn" id="export-json-btn">
+                    <span class="mbtn-icon">📄</span>
+                    <div><div style="font-weight:700">Export as JSON</div><div class="mbtn-sub">Re-importable backup file</div></div>
+                  </button>
+                  <button class="modal-big-btn" id="export-pdf-btn">
+                    <span class="mbtn-icon">📑</span>
+                    <div><div style="font-weight:700">Export as PDF</div><div class="mbtn-sub">With screenshots &amp; clickable links</div></div>
+                  </button>
+                </div>
+                <div id="pdf-progress" class="hidden">
+                  <div id="pdf-progress-bar"><div id="pdf-progress-fill"></div></div>
+                  <div id="pdf-progress-label">Preparing slides…</div>
+                </div>
+                <div class="modal-footer">
+                  <button class="modal-close-btn" id="export-close-btn">Close</button>
+                </div>
+              </div>
+              <!-- Import panel -->
+              <div id="modal-import" class="hidden">
+                <div class="modal-title">Import Notes</div>
+                <div class="modal-body">
+                  <div class="import-drop" id="import-drop">
+                    <input type="file" id="import-file-input" accept=".json,application/json">
+                    <div style="font-size:24px;margin-bottom:6px;">📂</div>
+                    <div id="import-drop-label" style="font-size:13px;font-weight:600;color:var(--text)">Drop .json or click to browse</div>
+                    <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Previously exported UA notes file</div>
+                  </div>
+                  <div id="import-preview" class="hidden">
+                    <div id="import-preview-label" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;"></div>
+                    <div class="import-mode-row">
+                      <label class="import-mode-opt"><input type="radio" name="import-mode" value="merge" checked> Merge with existing</label>
+                      <label class="import-mode-opt"><input type="radio" name="import-mode" value="replace"> Replace all</label>
+                    </div>
+                    <button class="btn-save" id="import-confirm-btn" style="width:100%;margin-top:8px;">✓ Import</button>
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button class="modal-close-btn" id="import-close-btn">Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Composer (hidden by default) -->
+          <div id="note-composer">
+            <div id="note-time-badge">⏱ 00:00:00</div>
+            <textarea id="note-text" placeholder="Jot down your thoughts…"></textarea>
+            <div class="note-type-row">
+              <button class="note-type-btn sel" data-type="note">📝 Note</button>
+              <button class="note-type-btn" data-type="bookmark">🔖 Bookmark</button>
+              <button class="note-type-btn" data-type="important">⭐ Important</button>
+            </div>
+            <div class="note-composer-actions">
+              <button class="btn-cancel" id="note-cancel-btn">Cancel</button>
+              <button class="btn-save"   id="note-save-btn">Save</button>
+            </div>
+          </div>
+
+          <!-- Notes list -->
+          <div id="notes-list">
+            <div id="notes-empty">No notes yet.<br>Hit <b>+ Note</b> while playing<br>to bookmark a moment.</div>
+          </div>
+
+          <!-- Translate panel (hidden until translate btn clicked) -->
+          <div id="translate-panel">
+            <div id="translate-header">
+              <span>🌐 Translations</span>
+              <div id="translate-header-controls">
+                <select id="translate-lang">
+                  <option value="hi">Hindi</option>
+                  <option value="te">Telugu</option>
+                  <option value="ta">Tamil</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="ja">Japanese</option>
+                  <option value="zh-CN">Chinese</option>
+                  <option value="ar">Arabic</option>
+                  <option value="pt">Portuguese</option>
+                </select>
+                <button id="translate-all-btn">Translate</button>
+                <button id="translate-close-btn">✕</button>
+              </div>
+            </div>
+            <div id="translate-body">
+              <div style="font-size:11px;color:var(--text-dim);padding:8px 0;">Select a language and hit Translate.</div>
+            </div>
+          </div>
+        </div><!-- /stab-notes -->
+
+        <!-- Chapters / Slides tab -->
+        <div id="stab-chapters" class="stab-pane">
+          <div id="chapter-panel">
+            <div class="panel-label" style="justify-content:space-between;">
+              SLIDE NAVIGATOR
+              <span id="chapter-count" style="font-size:9px;color:var(--text-dim);"></span>
+            </div>
+            <div id="chapter-list">
+              <div id="chapter-empty">Load a lecture to see slide chapters.</div>
+            </div>
+          </div>
+        </div><!-- /stab-chapters -->
+
+      </div>
+
+    </div><!-- /right-sidebar -->
+
+    <!-- Highlight Reel modal -->
+    <div id="reel-modal" class="hidden">
+      <div id="reel-modal-box">
+        <div class="modal-title" style="padding:14px;">🎬 Highlight Reel Export</div>
+        <div class="modal-body" style="padding:10px 14px;display:flex;flex-direction:column;gap:8px;">
+          <div id="reel-selection-info" style="font-size:12px;color:var(--text-dim);"></div>
+          <div id="reel-duration-info" style="font-size:11px;color:var(--hi);"></div>
+          <label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:8px;">
+            <span>Clip window</span>
+            <select id="reel-window" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 6px;font-size:12px;">
+              <option value="15">±15 seconds</option>
+              <option value="30" selected>±30 seconds</option>
+              <option value="60">±60 seconds</option>
+            </select>
+          </label>
+          <div id="reel-progress" class="hidden">
+            <div id="reel-progress-bar"><div id="reel-progress-fill"></div></div>
+            <div id="reel-progress-label" style="font-size:11px;color:var(--text-dim);margin-top:4px;"></div>
+          </div>
+        </div>
+        <div style="padding:8px 14px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;">
+          <button class="modal-close-btn" id="reel-cancel-btn">Cancel</button>
+          <button class="btn-save" id="reel-export-btn">Export Reel</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /player-body -->
+
+  <!-- Controls -->
+  <div id="controls-bar">
+
+    <button class="ctrl-btn" id="rewind-btn" title="Rewind 10s">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+        <path d="M3 3v5h5"/>
+        <text x="12" y="16" font-size="7" font-family="sans-serif" font-weight="bold" text-anchor="middle" stroke="none" fill="currentColor">10</text>
+      </svg>
+    </button>
+
+    <button class="ctrl-btn" id="play-btn" title="Play/Pause (Space)">
+      <svg id="play-icon"  viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+    </button>
+
+    <button class="ctrl-btn" id="forward-btn" title="Forward 10s">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+        <path d="M21 3v5h-5"/>
+        <text x="12" y="16" font-size="7" font-family="sans-serif" font-weight="bold" text-anchor="middle" stroke="none" fill="currentColor">10</text>
+      </svg>
+    </button>
+
+    <div id="seek-bar-container">
+      <div id="buffer-bar"></div>
+      <div id="note-markers-layer"></div>
+      <input type="range" id="seek-bar" min="0" max="100" value="0" step="1"/>
+      <div id="seek-hover-dot" class="hidden"></div>
+      <!-- Thumbnail preview (replaces plain tooltip) -->
+      <div id="seek-thumbnail-preview">
+        <canvas id="seek-thumb-canvas" width="160" height="90"></canvas>
+        <div id="seek-thumb-time">00:00:00</div>
+      </div>
+      <div id="seek-tooltip" class="hidden">
+        <div id="seek-tooltip-time">00:00:00</div>
+      </div>
+    </div>
+
+    <div id="time-display">
+      <span id="curr-time">00:00:00</span>
+      <span id="tot-time"> / 00:00:00</span>
+    </div>
+
+    <button class="ctrl-btn" id="volume-btn" title="Mute/Unmute">
+      <svg id="vol-on-icon"  viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      <svg id="vol-off-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+    </button>
+
+    <input type="range" id="volume-slider-bar" min="0" max="1" value="1" step="0.05"/>
+
+    <div id="settings-container">
+      <button class="ctrl-btn" id="settings-btn" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <div id="settings-popup" class="hidden">
+        <div class="settings-item">
+          <span>Speed</span>
+          <select id="speed-select" class="settings-select">
+            <option value="0.5">0.5×</option>
+            <option value="0.75">0.75×</option>
+            <option value="1" selected>1.0×</option>
+            <option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2.0×</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <button class="ctrl-btn" id="draw-mode-ctrl-btn" title="Toggle drawing on slide (D)" style="font-size:16px;">✏️</button>
+
+    <button class="ctrl-btn" id="offboard-toggle-btn" title="Show off-board scratch content (pasted copies parked outside the board)" style="font-size:16px;">🗂️</button>
+
+    <button class="ctrl-btn" id="fullscreen-btn" title="Fullscreen">
+      <svg id="fs-enter-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+      </svg>
+      <svg id="fs-exit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden">
+        <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+      </svg>
+    </button>
+
+  </div><!-- /controls-bar -->
+
+  <!-- ── Color Toolbar ─────────────────────────────────────────────────── -->
+  <div id="color-toolbar">
+    <div class="ct-group">
+      <span class="ct-label">BOARD</span>
+      <button class="bg-swatch sel" data-bg="#111111" style="background:#111" title="Charcoal"></button>
+      <button class="bg-swatch" data-bg="#000000" style="background:#000;border-color:#444" title="Black"></button>
+      <button class="bg-swatch" data-bg="#0D1B2A" style="background:#0D1B2A" title="Midnight blue"></button>
+      <button class="bg-swatch" data-bg="#14281D" style="background:#14281D" title="Chalkboard green"></button>
+      <button class="bg-swatch" data-bg="#1C1917" style="background:#1C1917" title="Warm dark"></button>
+      <button class="bg-swatch" data-bg="#22223B" style="background:#22223B" title="Indigo"></button>
+      <button class="bg-swatch" data-bg="#F5F1E8" style="background:#F5F1E8" title="Paper"></button>
+      <button class="bg-swatch" data-bg="#FFFFFF" style="background:#FFF;border-color:#888" title="White"></button>
+      <input type="color" id="bg-custom" value="#111111" title="Custom board color">
+    </div>
+    <div class="ct-sep"></div>
+    <div class="ct-group">
+      <span class="ct-label">PEN</span>
+      <button id="pen-mode-btn" class="ct-mode-btn" title="Toggle lecture vs override colors">LECTURE</button>
+      <button class="pen-swatch" data-pen="#FFFFFF" style="background:#FFFFFF" title="White"></button>
+      <button class="pen-swatch" data-pen="#FFEA00" style="background:#FFEA00" title="Yellow"></button>
+      <button class="pen-swatch" data-pen="#00FF41" style="background:#00FF41" title="Green"></button>
+      <button class="pen-swatch" data-pen="#FF3131" style="background:#FF3131" title="Red"></button>
+      <button class="pen-swatch" data-pen="#00D0FF" style="background:#00D0FF" title="Cyan"></button>
+      <button class="pen-swatch" data-pen="#FF8A00" style="background:#FF8A00" title="Orange"></button>
+      <button class="pen-swatch" data-pen="#C77DFF" style="background:#C77DFF" title="Violet"></button>
+      <button class="pen-swatch" data-pen="#FF6FB5" style="background:#FF6FB5" title="Pink"></button>
+      <input type="color" id="pen-custom" value="#FFEA00" title="Custom pen color">
+      <span id="pen-warn" class="ct-warn hidden">⚠ low contrast</span>
+    </div>
+  </div>
+
+</div><!-- /player-section -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SCRIPTS — load order matters. These are classic scripts (not modules),
+     so top-level declarations are shared across files. Do not reorder:
+
+       util          helpers + DOM refs (needs DOM, hence end of <body>)
+       timeline      TimelineEngine
+       state-manager StateManager + slide-deck helpers
+       renderers     PDFRenderer + CanvasRenderer
+       copy-fix      patches StateManager/CanvasRenderer — must come AFTER both
+       player        PlayerController, loadLesson, controls, colour toolbar
+                     (its pen-override patch wraps the copy-fix version)
+       notes         notebook / import / export
+       features      user-draw, chapters, sync, reel, thumbnails, translate
+                     (wraps renderNotesList — must come AFTER notes)
+       init          DOMContentLoaded wiring + offline loader
+     ═══════════════════════════════════════════════════════════════════════ -->
+<script src="js/util.php?v=11"></script>
+<script src="js/timeline.php?v=11"></script>
+<script src="js/state-manager.php?v=11"></script>
+<script src="js/renderers.php?v=11"></script>
+<script src="js/copy-fix.php?v=11"></script>
+<script src="js/player.php?v=11"></script>
+<script src="js/polls.php?v=11"></script>
+<script src="js/notes.php?v=12"></script>
+<script src="js/features.php?v=11"></script>
+<script src="js/init.php?v=11"></script>
+
+</body>
+</html>
