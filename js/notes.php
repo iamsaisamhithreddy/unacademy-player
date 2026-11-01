@@ -2,11 +2,11 @@
 "use strict";
 
 // ════════════════════════════════════════════════════════════════════════════
-// NOTES / BOOKMARKS SYSTEM  — server-side DB via notes_api.php
-// Falls back to localStorage when lecture_id is not in the URL
+// NOTES / BOOKMARKS SYSTEM  — saved per logged-in user + lecture via notes_api.php
+// Falls back to localStorage when lecture_id is missing or the user is not logged in
 // ════════════════════════════════════════════════════════════════════════════
 let _notesKey    = "ua_notes_default";   // fallback localStorage key
-let _notesCache  = [];   // [{id, ts, type, text, videoSec, slideUrl}]
+let _notesCache  = [];   // [{id, ts, type, text, videoSec, slideUrl, captureMode}]
 let _currentVideoUrl = "";
 
 // ── Resolve lecture_id from URL param (added by user.php watch-video link) ──
@@ -25,45 +25,92 @@ function notesKey(videoUrl) {
   }
 }
 
-// ── Load: try DB first, fall back to localStorage ───────────────────────────
+// ── API helper ──────────────────────────────────────────────────────────────
+// notes_api.php lives next to user.php (one folder above /player/). We try that
+// first and fall back to the same folder, so it works wherever you put it.
+const NOTES_API_CANDIDATES = ["../notes_api.php", "notes_api.php"];
+let   _notesApiUrl = null;      // remembered once one candidate answers with JSON
+let   _dbReady     = false;     // true only after a successful load from the DB
+
+async function notesApi(payload) {
+  const urls = _notesApiUrl ? [_notesApiUrl] : NOTES_API_CANDIDATES;
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const res  = await fetch(url, {
+        method:      "POST",
+        credentials: "same-origin",
+        headers:     { "Content-Type": "application/json" },
+        body:        JSON.stringify(payload)
+      });
+      const data = await res.json();      // throws if the URL was a 404 page
+      _notesApiUrl = url;
+      return data;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("notes api unreachable");
+}
+
+// ── "Please log in" banner (shown if the login session has expired) ─────────
+function showNotesAuthBanner() {
+  if (document.getElementById("notes-auth-banner")) return;
+  const b = document.createElement("div");
+  b.id = "notes-auth-banner";
+  b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#7f1d1d;color:#fff;" +
+                    "padding:8px 14px;font:13px/1.4 sans-serif;text-align:center;";
+  b.innerHTML = 'You are not logged in — notes are saved on this device only. ' +
+                '<a href="../auth.php" style="color:#fde68a;font-weight:600">Log in</a>';
+  document.body.appendChild(b);
+}
+
+// ── Load: this user's notes from the DB, fall back to localStorage ──────────
 async function loadNotes() {
   const lid = getLectureId();
+  let localCopy = [];
+  try { localCopy = JSON.parse(localStorage.getItem(_notesKey) || "[]") || []; }
+  catch(_) { localCopy = []; }
+
   if (lid) {
     try {
-      const res  = await fetch("notes_api.php", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ action: "load", lecture_id: lid })
-      });
-      const data = await res.json();
+      const data = await notesApi({ action: "load", lecture_id: lid });
       if (data.ok) {
+        _dbReady = true;
+        if (!data.exists && localCopy.length) {
+          // First time this account opens this lecture: adopt the notes that were
+          // only stored in this browser before login existed, and push them to the DB.
+          _notesCache = localCopy;
+          renderNotesList();
+          saveNotes();
+          return;
+        }
         _notesCache = data.notes || [];
+        try { localStorage.setItem(_notesKey, JSON.stringify(_notesCache)); } catch(_) {}
         renderNotesList();
         return;
       }
+      if (data.error === "auth") showNotesAuthBanner();
     } catch(_) { /* network fail — fall through */ }
   }
-  // Fallback
-  try { _notesCache = JSON.parse(localStorage.getItem(_notesKey) || "[]"); }
-  catch(_) { _notesCache = []; }
+  // Fallback (not logged in / offline / no lecture_id)
+  _notesCache = localCopy;
   renderNotesList();
 }
 
-// ── Save: try DB, mirror to localStorage as offline backup ──────────────────
+// ── Save: DB (per user) + localStorage mirror as offline backup ─────────────
 async function saveNotes() {
   const lid = getLectureId();
-  if (lid) {
-    try {
-      await fetch("notes_api.php", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ action: "save", lecture_id: lid, notes: _notesCache })
-      });
-    } catch(_) { /* silent — localStorage below is the backup */ }
-  }
-  // Always keep a localStorage copy as offline backup
+  // Local copy first, so nothing is lost even if the DB call fails
   try { localStorage.setItem(_notesKey, JSON.stringify(_notesCache)); }
   catch(_) {}
+
+  // Only write to the DB after a successful load — otherwise a failed load would
+  // overwrite the saved notes with an empty list.
+  if (lid && _dbReady) {
+    try {
+      const data = await notesApi({ action: "save", lecture_id: lid, notes: _notesCache });
+      if (!data.ok && data.error === "auth") { _dbReady = false; showNotesAuthBanner(); }
+    } catch(_) { /* silent — localStorage above is the backup */ }
+  }
   // Broadcast to other tabs
   if (typeof broadcastNotesUpdate === "function") broadcastNotesUpdate();
 }
@@ -81,7 +128,18 @@ function getSlideUrlAtSec(sec) {
 function addNote(videoSec, type, text) {
   const id       = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
   const slideUrl = getSlideUrlAtSec(videoSec);
-  const note     = { id, ts: fmtTime(videoSec), videoSec, type, text, slideUrl };
+
+  // ── Stamp captureMode at note-creation time so the note carries a record of
+  //    whether the educator was screen-sharing at this exact timestamp.
+  //    This requires no schema migration — it's just an extra optional field.
+  const vidDurMs    = (videoEl ? (videoEl.duration || 0) : 0) * 1000;
+  const noteEventMs = (timeline && vidDurMs)
+                      ? timeline.videoToEventMs(videoSec * 1000, vidDurMs)
+                      : 0;
+  const captureMode = (stateManager && stateManager.isScreenShareActive(noteEventMs))
+                      ? "screen-share" : "slide";
+
+  const note     = { id, ts: fmtTime(videoSec), videoSec, type, text, slideUrl, captureMode };
   const idx      = _notesCache.findIndex(n => n.videoSec > videoSec);
   if(idx === -1) _notesCache.push(note);
   else _notesCache.splice(idx, 0, note);
@@ -252,28 +310,81 @@ async function exportPDF() {
   const savedTime   = videoEl.currentTime;
   videoEl.pause();
 
-  // ── Helper: seek video → rebuild state → wait for slide+annotations → capture canvas ──
+  // ════════════════════════════════════════════════════════════════════════
+  // captureAtSec(sec)
+  //
+  // Seeks the video to `sec`, rebuilds annotation state, then decides which
+  // capture path to use:
+  //
+  //   NORMAL MODE  — educator is on a whiteboard/PDF slide
+  //     → composites slideCanvas + drawCanvas (existing behaviour, unchanged)
+  //
+  //   SCREEN-SHARE MODE  — stateManager.isScreenShareActive(eventMs) === true
+  //     → the recorded video track itself IS the screen share at this point,
+  //       so we draw the current <video> frame to an offscreen canvas and
+  //       return that JPEG.
+  //     → If the video element has CORS restrictions that taint the canvas,
+  //       we catch the SecurityError and fall back to the slide composite
+  //       rather than returning null (graceful degradation).
+  //
+  // The PDF exporter calls this once per note; no separate implementation
+  // is needed for screen-share notes.
+  // ════════════════════════════════════════════════════════════════════════
   async function captureAtSec(sec) {
     return new Promise(async (resolve) => {
-      if(!videoEl || !timeline || !stateManager || !pdfRenderer || !canvasRenderer) {
+      if (!videoEl || !timeline || !stateManager || !pdfRenderer || !canvasRenderer) {
         resolve(null); return;
       }
 
       const vidDurMs = (videoEl.duration || 0) * 1000;
       const eventMs  = timeline.videoToEventMs(sec * 1000, vidDurMs);
 
-      // Seek video (so webcam frame matches, and slide engine has correct time reference)
+      // ── Step 1–4: seek to the exact timestamp and wait for the frame ──────
       videoEl.currentTime = sec;
-      await new Promise(r => videoEl.addEventListener("seeked", r, {once:true}));
+      await new Promise(r => videoEl.addEventListener("seeked", r, {once: true}));
 
-      // Rebuild all annotations at this timestamp
+      // ── Step 6: rebuild all annotation state at this timestamp ────────────
       stateManager.rebuildState(eventMs);
 
-      // Update slide — wait for it to fully render
+      // ── Step 7: determine screen-share state at this exact event time ─────
+      const isScreenShare = stateManager.isScreenShareActive(eventMs);
+
+      if (isScreenShare) {
+        // ── Step 8: Screen-share path ────────────────────────────────────────
+        // The video track contains the educator's shared screen for this
+        // segment — capture the frame directly from the <video> element.
+        // videoEl.videoWidth/Height give the actual encoded dimensions.
+        const vw = videoEl.videoWidth  || 1280;
+        const vh = videoEl.videoHeight || 720;
+        const ssCanvas = document.createElement("canvas");
+        ssCanvas.width  = vw;
+        ssCanvas.height = vh;
+        const ssCtx = ssCanvas.getContext("2d");
+        try {
+          ssCtx.drawImage(videoEl, 0, 0, vw, vh);
+          // toDataURL() throws SecurityError if the canvas was tainted by a
+          // cross-origin video without CORS headers — caught below.
+          const dataUrl = ssCanvas.toDataURL("image/jpeg", 0.88);
+          resolve(dataUrl);
+          return;
+        } catch (corsErr) {
+          // CORS restriction prevents reading back the video frame.
+          // Fall through to the slide-composite path as graceful degradation.
+          console.warn(
+            "[captureAtSec] Screen-share frame blocked (canvas CORS taint). " +
+            "Falling back to slide composite for sec=" + sec,
+            corsErr
+          );
+          // Fall-through to Case 1 below
+        }
+      }
+
+      // ── Step 9 (Case 1, and CORS fallback): slide + annotation composite ──
+      // This is the original implementation, fully preserved.
       const slideInfo = stateManager.getSlideAtTime(eventMs);
       stateManager.updateSlideForTime(eventMs);
 
-      if(slideInfo && slideInfo.url && slideInfo.url !== pdfRenderer.currentUrl) {
+      if (slideInfo && slideInfo.url && slideInfo.url !== pdfRenderer.currentUrl) {
         // Slide image needs to load — wait for it
         await new Promise(r => {
           pdfRenderer.renderSlide(slideInfo.url).then(r).catch(r);
@@ -282,7 +393,7 @@ async function exportPDF() {
         await sleep(80);
       } else {
         // Same slide or no slide — just re-render
-        if(!slideInfo || !slideInfo.url) pdfRenderer.clearToBackground();
+        if (!slideInfo || !slideInfo.url) pdfRenderer.clearToBackground();
         await sleep(40);
       }
 
@@ -296,9 +407,9 @@ async function exportPDF() {
       const composite = document.createElement("canvas");
       composite.width  = W;
       composite.height = H;
-      const ctx2d = composite.getContext("2d");
-      ctx2d.drawImage(slideCanvas, 0, 0);   // slide / PDF background
-      ctx2d.drawImage(drawCanvas,  0, 0);   // annotations on top
+      const compCtx = composite.getContext("2d");
+      compCtx.drawImage(slideCanvas, 0, 0);   // slide / PDF background
+      compCtx.drawImage(drawCanvas,  0, 0);   // annotations on top
 
       resolve(composite.toDataURL("image/jpeg", 0.88));
     });
@@ -334,7 +445,10 @@ async function exportPDF() {
     setProgress(Math.round(5 + (i / _notesCache.length) * 88),
       `Capturing note ${i+1} of ${_notesCache.length}…`);
 
-    // Capture canvas at this note's timestamp
+    // Capture canvas at this note's timestamp.
+    // captureAtSec() automatically picks the correct path:
+    //   • screen-share notes  → educator's actual screen-share frame
+    //   • normal notes        → slide + annotation composite
     const imgData = await captureAtSec(note.videoSec);
 
     doc.addPage();
@@ -366,7 +480,7 @@ async function exportPDF() {
     doc.textWithLink("▶ Open in player at " + note.ts, MARGIN, curY, {url: noteUrl});
     curY += 7;
 
-    // Screenshot (slide + annotations composite)
+    // Screenshot
     const IMG_W = PW - MARGIN * 2;
     const IMG_H = Math.round(IMG_W * 9 / 16);
 
